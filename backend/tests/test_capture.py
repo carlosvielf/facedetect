@@ -87,7 +87,44 @@ def test_temporal_confirmation_and_no_duplicates(setup, monkeypatch):
     with SessionLocal() as db:
         records = list(db.scalars(select(AttendanceRecord)))
         assert len(records) == 1
-        assert records[0].status == 'provisional'
+        assert records[0].status == 'present'
+
+
+def test_medium_score_stays_provisional_until_high_score(setup, monkeypatch):
+    _, values = setup
+    reference = np.array([1., 0., 0.])
+    medium = np.array([.6, .8, 0.])  # cosine 0.6: above THRESHOLD, below AUTO_PRESENT_SCORE
+    with SessionLocal() as db:
+        db.get(AttendanceSession, values['session']).status = 'running'
+        db.add(FaceEmbedding(student_id=values['student'], model=MODEL, encrypted=encrypt(reference), authorization='Test authorization only'))
+        db.commit()
+    service = CaptureService()
+    clock = iter(float(2 * i) for i in range(10))
+    monkeypatch.setattr('app.capture.monotonic', lambda: next(clock))
+    for _ in range(settings.observations):
+        service.process(values['session'], [medium])
+    with SessionLocal() as db:
+        assert db.scalar(select(AttendanceRecord)).status == 'provisional'
+    service.process(values['session'], [reference])
+    with SessionLocal() as db:
+        assert db.scalar(select(AttendanceRecord)).status == 'present'
+
+
+def test_high_score_never_overrides_teacher_review(setup, monkeypatch):
+    _, values = setup
+    vector = np.array([1., 0., 0.])
+    with SessionLocal() as db:
+        db.get(AttendanceSession, values['session']).status = 'running'
+        db.add(FaceEmbedding(student_id=values['student'], model=MODEL, encrypted=encrypt(vector), authorization='Test authorization only'))
+        db.add(AttendanceRecord(session_id=values['session'], student_id=values['student'], status='rejected'))
+        db.commit()
+    service = CaptureService()
+    clock = iter(float(2 * i) for i in range(10))
+    monkeypatch.setattr('app.capture.monotonic', lambda: next(clock))
+    for _ in range(settings.observations + 1):
+        service.process(values['session'], [vector])
+    with SessionLocal() as db:
+        assert db.scalar(select(AttendanceRecord)).status == 'rejected'
 
 
 def test_embedding_from_lost_key_is_skipped_not_fatal(setup):

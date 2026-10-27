@@ -18,7 +18,7 @@ ESP32-S3 (CameraWebServer)          Backend local (Windows, 1 processo)         
 - A ESP32 só captura. Detecção, embeddings e comparação rodam somente no backend Python.
 - Um único leitor por câmera alimenta todos os consumidores; nada abre conexões paralelas ao sensor (o stream da porta 81 atende um cliente por vez). Se o stream falhar, o leitor usa `/capture` por 30 s e tenta o stream de novo. O backoff de reconexão é limitado (1–10 s), e o leitor encerra 10 s depois que o último consumidor sai.
 - A inferência roda em thread, sempre no frame mais recente, com teto de `INFERENCE_MAX_FPS`. Frames antigos são descartados, não enfileirados.
-- A sobreposição do monitor **não** grava presença. Registros provisórios vêm apenas do `CaptureService`, depois de `OBSERVATIONS` observações espaçadas, com restrição única `(session_id, student_id)` no banco.
+- A sobreposição do monitor **não** grava presença. Registros vêm apenas do `CaptureService`, depois de `OBSERVATIONS` observações espaçadas (Presente se a similaridade atingir `AUTO_PRESENT_SCORE`, senão provisório), com restrição única `(session_id, student_id)` no banco.
 
 ## Executar no Windows 11
 
@@ -69,8 +69,8 @@ Abra http://127.0.0.1:5173. O Vite encaminha `/api`, inclusive o WebSocket, para
    - **Pré-visualização**: só imagem, nenhuma inferência.
    - **Detecção facial**: retângulos e pontuação do detector, sem nomes.
    - **Reconhecimento facial**: exige uma chamada **em andamento**, desta câmera, de uma turma do professor. Mostra nome e similaridade (verde), "incerto" (âmbar), "desconhecido" (vermelho) e "rosto detectado" sem qualidade para comparar (azul).
-3. **Nova chamada**: crie a sessão e clique em *Iniciar captura*. Alunos reconhecidos em `OBSERVATIONS` frames aparecem como provisórios, uma vez cada.
-4. O professor confirma (*Presente*), rejeita ou marca manualmente qualquer aluno e então finaliza. A finalização é bloqueada enquanto houver provisórios. O histórico e as exportações CSV/XLSX/PDF usam os dados gravados.
+3. **Nova chamada**: crie a sessão e clique em *Iniciar captura*. Alunos reconhecidos em `OBSERVATIONS` frames são marcados como **Presente** automaticamente quando a similaridade atinge `AUTO_PRESENT_SCORE`; abaixo disso aparecem como provisórios, uma vez cada.
+4. O professor confirma os provisórios (*Presente*), rejeita ou marca manualmente qualquer aluno e então finaliza. A finalização é bloqueada enquanto houver provisórios. O histórico e as exportações CSV/XLSX/PDF usam os dados gravados.
 5. **Diagnóstico do Sistema** (admin): indicadores independentes de API, banco, câmera, serviço de captura, UniFace, modelos, embeddings, processamento de frames, eventos de chamada e comunicação frontend/backend. Cada um só mostra "Funcionando" depois de executado com sucesso.
 
 A pontuação de **detecção** indica a confiança de que há um rosto e **não** é probabilidade de identidade. A **similaridade** é o cosseno entre embeddings e precisa de calibração.

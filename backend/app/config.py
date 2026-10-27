@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     ambiguity_margin: float = Field(default=0.08, ge=0, le=1)
     # Scores in [threshold - band, threshold) are shown as "uncertain", never as a match.
     uncertain_band: float = Field(default=0.05, ge=0, le=1)
+    # A confirmed match (OBSERVATIONS frames) scoring at least this is marked present
+    # without teacher review; lower matches stay provisional. 1 disables it.
+    auto_present_score: float = Field(default=0.7, ge=0, le=1)
     observations: int = Field(default=3, ge=2)
     interval_seconds: float = Field(default=2, ge=1)
     # Face quality gates. SCRFD scores clear frontal faces around 0.75-0.85,

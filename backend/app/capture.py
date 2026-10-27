@@ -51,11 +51,17 @@ class CaptureService:
                         times.append(timestamp)
                     record = db.scalar(select(AttendanceRecord).where(
                         AttendanceRecord.session_id == session_id, AttendanceRecord.student_id == student_id))
-                    if record is None and len(times) >= settings.observations:
-                        db.add(AttendanceRecord(session_id=session_id, student_id=student_id, observations=len(times)))
-                        state = 'provisional'
+                    confirmed = len(times) >= settings.observations
+                    sure = confirmed and score >= settings.auto_present_score
+                    if record is None and confirmed:
+                        state = 'present' if sure else 'provisional'
+                        db.add(AttendanceRecord(session_id=session_id, student_id=student_id, observations=len(times), status=state))
                     elif record:
-                        continue
+                        # Upgrade an unreviewed provisional record; never override the teacher.
+                        if not (sure and record.status == 'provisional' and record.reviewed_by is None):
+                            continue
+                        record.status = state = 'present'
+                        record.observations = len(times)
                 db.add(RecognitionEvent(session_id=session_id, student_id=student_id, score=score, state=state))
             db.commit()
 
