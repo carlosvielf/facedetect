@@ -27,3 +27,17 @@ export async function frame(session: number) {
   }
   return URL.createObjectURL(await response.blob());
 }
+export const getToken = () => credential;
+// ws(s)://… for the backend: VITE_API_URL when set (https -> wss), else the page origin via the Vite proxy.
+export function wsUrl(path: string) {
+  const origin = base || window.location.origin;
+  return origin.replace(/^http/, 'ws') + '/api' + path;
+}
+export async function blob(path: string, method = 'GET') {
+  const response = await fetch(base + '/api' + path, {method, headers:{Authorization:`Bearer ${credential}`}});
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || `Falha HTTP ${response.status}`);
+  }
+  return {data: await response.blob(), headers: response.headers};
+}

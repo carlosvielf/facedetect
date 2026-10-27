@@ -1,3 +1,5 @@
+> Registro histórico de 20/10/2026. O estado atual, com testes executados em 27/10/2026, está em [DIAGNOSTICO.md](DIAGNOSTICO.md).
+
 # Registro de validação — 20/10/2026
 
 ## Executado

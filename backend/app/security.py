@@ -16,15 +16,19 @@ def token(user: User):
     return jwt.encode({'sub': str(user.id), 'exp': datetime.now(timezone.utc) + timedelta(hours=2)}, settings.jwt_secret, algorithm='HS256')
 
 
-def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer), db: Session = Depends(database)):
+def user_from_token(db: Session, value: str):
     try:
-        payload = jwt.decode(credentials.credentials, settings.jwt_secret, algorithms=['HS256'])
+        payload = jwt.decode(value, settings.jwt_secret, algorithms=['HS256'])
         user = db.get(User, int(payload['sub']))
         if user is None:
             raise ValueError()
         return user
-    except (jwt.PyJWTError, ValueError, KeyError):
+    except (jwt.PyJWTError, ValueError, KeyError, TypeError):
         raise HTTPException(401, 'Sessão inválida ou expirada')
+
+
+def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer), db: Session = Depends(database)):
+    return user_from_token(db, credentials.credentials)
 
 
 def admin(user: User = Depends(current_user)):

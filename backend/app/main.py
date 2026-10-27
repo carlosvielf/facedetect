@@ -19,6 +19,8 @@ from app.models import User, Student, Classroom, Enrollment, Camera, FaceEmbeddi
 from app.security import admin, current_user, passwords, token
 from app.recognition import MODEL, recognizer, encrypt
 from app.capture import capture
+from app.camera import hub
+from app import diagnostics, monitor
 
 
 @asynccontextmanager
@@ -33,11 +35,14 @@ async def lifespan(app):
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+    await hub.close()
 
 
 app = FastAPI(title='Presença Acadêmica', lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
                    allow_methods=['GET', 'POST', 'PUT', 'DELETE'], allow_headers=['Authorization', 'Content-Type'])
+app.include_router(monitor.router)
+app.include_router(diagnostics.router)
 requests = defaultdict(deque)
 
 
@@ -260,7 +265,8 @@ def add_camera(body: CameraInput, user: User = Depends(admin), db: Session = Dep
 
 @app.get('/api/cameras')
 def cameras(user: User = Depends(current_user), db: Session = Depends(database)):
-    return [{'id': c.id, 'name': c.name, 'status': capture.status.get(c.id, 'idle')} for c in db.scalars(select(Camera))]
+    return [{'id': c.id, 'name': c.name, 'status': capture.status.get(c.id, 'idle'),
+             'live': hub.get(c.id).state if hub.get(c.id) else 'disconnected'} for c in db.scalars(select(Camera))]
 
 
 class SessionInput(BaseModel):
@@ -359,14 +365,12 @@ def history(class_id: int | None = None, professor_id: int | None = None,
 
 @app.get('/api/attendance/sessions/{session_id}/frame')
 async def camera_frame(session_id: int, user: User = Depends(current_user), db: Session = Depends(database)):
-    import httpx
     session = attendance(db, session_id, user)
     camera = db.get(Camera, session.camera_id)
     try:
-        async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
-            content = await capture.fetch(client, camera)
-    except (httpx.HTTPError, ValueError):
-        raise HTTPException(503, 'A ESP32 não respondeu à captura. Confira a alimentação e a conexão Wi-Fi e feche outras páginas de vídeo da câmera.')
+        content = await monitor.snapshot_bytes(camera)
+    except ValueError as exc:
+        raise HTTPException(503, f'A ESP32 não respondeu à captura. {exc}')
     return Response(content, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
 
 

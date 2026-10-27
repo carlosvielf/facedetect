@@ -1,13 +1,13 @@
 import asyncio
 import logging
 from collections import defaultdict, deque
-from time import monotonic
-import httpx
+from time import monotonic, time
 from sqlalchemy import select
 from app.config import settings
 from app.db import SessionLocal
 from app.models import AttendanceSession, Camera, Enrollment, FaceEmbedding, Student, RecognitionEvent, AttendanceRecord
-from app.recognition import MODEL, recognizer, decrypt, match
+from app.recognition import MODEL, recognizer, match, usable
+from app.camera import describe, fetch_jpeg, hub
 
 log = logging.getLogger(__name__)
 
@@ -17,35 +17,11 @@ class CaptureService:
     def __init__(self):
         self.status = {}
         self.observations = defaultdict(deque)
-        self.camera_locks = defaultdict(asyncio.Lock)
+        self.heartbeat = None
+        self.sessions = {}  # session_id -> {'ok_at', 'error', 'faces'} for diagnostics
 
     async def fetch(self, client, camera):
-        if camera.host not in settings.camera_hosts:
-            raise ValueError('Host da câmera não autorizado no backend')
-        # Preview requests and recognition must not capture simultaneously.
-        async with self.camera_locks[camera.host]:
-            for attempt in range(2):
-                try:
-                    return await self._fetch(client, camera)
-                except (httpx.TransportError, httpx.HTTPStatusError):
-                    if attempt:
-                        raise
-                    await asyncio.sleep(.2)
-
-    async def _fetch(self, client, camera):
-        chunks = bytearray()
-        # CameraWebServer responses can leave bytes on a persistent connection.
-        # Use a fresh connection for each JPEG to avoid corrupting the next response.
-        async with client.stream('GET', f'http://{camera.host}/capture',
-                                 headers={'Connection': 'close'}) as response:
-            response.raise_for_status()
-            if 'image/jpeg' not in response.headers.get('content-type', ''):
-                raise ValueError('A câmera não retornou JPEG')
-            async for chunk in response.aiter_bytes():
-                chunks.extend(chunk)
-                if len(chunks) > 8_000_000:
-                    raise ValueError('Captura excede 8 MB')
-        return bytes(chunks)
+        return await fetch_jpeg(client, camera.host)
 
     def process(self, session_id, vectors):
         with SessionLocal() as db:
@@ -55,7 +31,9 @@ class CaptureService:
             rows = db.execute(select(FaceEmbedding).join(Student).join(
                 Enrollment, Enrollment.student_id == Student.id).where(
                 Enrollment.class_id == session.class_id, Student.active.is_(True), FaceEmbedding.model == MODEL)).scalars()
-            candidates = [(row.student_id, decrypt(row.encrypted)) for row in rows]
+            candidates, invalid = usable((row.student_id, row.encrypted) for row in rows)
+            if invalid:
+                log.warning('Chamada %s: %s embedding(s) não descriptografam com a EMBEDDING_KEY atual', session_id, invalid)
             # At most one observation per student per frame, even with duplicate faces.
             observed = set()
             for vector in vectors:
@@ -82,27 +60,50 @@ class CaptureService:
             db.commit()
 
     async def run(self):
-        async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
+        held = {}  # session_id -> camera_id currently acquired from the hub
+        processed = {}  # session_id -> last frame seq, so a frozen frame is never counted twice
+        try:
             while True:
+                self.heartbeat = time()
                 with SessionLocal() as db:
                     active = db.execute(select(AttendanceSession.id, Camera).join(
                         Camera, Camera.id == AttendanceSession.camera_id).where(AttendanceSession.status == 'running')).all()
                 for session_id, camera in active:
+                    if held.get(session_id) != camera.id:
+                        hub.acquire(camera, f'session:{session_id}')
+                        held[session_id] = camera.id
+                for session_id in set(held) - {row[0] for row in active}:
+                    hub.release(held.pop(session_id), f'session:{session_id}')
+                    processed.pop(session_id, None)
+                    self.sessions.pop(session_id, None)
+                for session_id, camera in active:
                     try:
-                        content = await self.fetch(client, camera)
-                        vectors = await asyncio.to_thread(recognizer.analyze, content)
+                        if camera.host not in settings.camera_hosts:
+                            raise ValueError('Host da câmera não autorizado no backend')
+                        frame = await hub.get(camera.id).latest(max_age=settings.interval_seconds * 2, wait=settings.camera_timeout)
+                        if frame is None:
+                            raise ValueError(hub.get(camera.id).error or 'Nenhum frame recente da câmera')
+                        if processed.get(session_id) == frame.seq:
+                            continue
+                        processed[session_id] = frame.seq
+                        vectors = await asyncio.to_thread(recognizer.analyze, frame.data)
                         await asyncio.to_thread(self.process, session_id, vectors)
                         self.status[camera.id] = 'connected'
+                        self.sessions[session_id] = {'ok_at': time(), 'error': None, 'faces': len(vectors)}
                     except asyncio.CancelledError:
                         raise
-                    except Exception:
+                    except Exception as exc:
                         self.status[camera.id] = 'error'
+                        self.sessions[session_id] = {**self.sessions.get(session_id, {'ok_at': None, 'faces': 0}), 'error': describe(exc)}
                         log.exception('Falha na captura ou inferência da câmera %s', camera.id)
                 active_ids = {row[0] for row in active}
                 for key in list(self.observations):
                     if key[0] not in active_ids:
                         del self.observations[key]
                 await asyncio.sleep(settings.interval_seconds)
+        finally:
+            for session_id, camera_id in held.items():
+                hub.release(camera_id, f'session:{session_id}')
 
 
 capture = CaptureService()

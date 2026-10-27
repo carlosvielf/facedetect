@@ -1,6 +1,7 @@
 import os
 from cryptography.fernet import Fernet
 
+os.environ['ATTENDANCE_TEST'] = '1'
 os.environ['DATABASE_URL'] = 'sqlite://'
 os.environ['JWT_SECRET'] = 'test-only-secret-with-more-than-32-characters'
 os.environ['EMBEDDING_KEY'] = Fernet.generate_key().decode()
